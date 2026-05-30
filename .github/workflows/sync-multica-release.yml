@@ -1,0 +1,36 @@
+name: Sync Multica release to Zeabur
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Get latest Multica release tag
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG=$(gh release view --repo multica-ai/multica --json tagName -q .tagName)
+          test -n "$TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Latest release: $TAG"
+
+      - name: Login Zeabur
+        run: npx zeabur@latest auth login --token "${{ secrets.ZEABUR_TOKEN }}" -i=false
+
+      - name: Update backend & frontend image tag
+        run: |
+          TAG="${{ steps.release.outputs.tag }}"
+          npx zeabur@latest service update tag \
+            --id "${{ secrets.ZEABUR_BACKEND_ID }}" -t "$TAG" -y -i=false
+          npx zeabur@latest service update tag \
+            --id "${{ secrets.ZEABUR_FRONTEND_ID }}" -t "$TAG" -y -i=false
+          echo "Deployed $TAG to Zeabur backend & frontend"
