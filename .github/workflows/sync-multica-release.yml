@@ -13,21 +13,55 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Resolve latest release tag
+      - name: Resolve latest GHCR tags per image
         id: tags
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          # Use GitHub Releases as source of truth. GHCR tags/list is paginated
-          # (130+ tags) and the old n=100 query missed v0.3.32+ / v0.4.0, causing
-          # the sync job to redeploy stale v0.3.29 / v0.3.31 images.
-          TAG=$(gh api repos/multica-ai/multica/releases/latest --jq .tag_name)
-          test -n "$TAG"
-          test "$TAG" != "null"
+          get_latest_tag() {
+            local image="$1"
+            local token url tags_file next
 
-          echo "backend_tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "web_tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "Latest release tag: $TAG"
+            token=$(curl -fsSL \
+              "https://ghcr.io/token?service=ghcr.io&scope=repository:multica-ai/${image}:pull" \
+              | jq -r .token)
+
+            url="https://ghcr.io/v2/multica-ai/${image}/tags/list?n=100"
+            tags_file=$(mktemp)
+
+            while [ -n "$url" ]; do
+              curl -fsSL -D /tmp/ghcr-hdrs -H "Authorization: Bearer ${token}" "$url" \
+                | jq -r '.tags[]?' >> "$tags_file"
+
+              next=$(grep -i '^link:' /tmp/ghcr-hdrs 2>/dev/null \
+                | sed -n 's/.*<\([^>]*\)>; *rel="next".*/\1/p' | head -1 || true)
+              if [ -n "$next" ]; then
+                case "$next" in
+                  /*) url="https://ghcr.io${next}" ;;
+                  *) url="$next" ;;
+                esac
+              else
+                url=""
+              fi
+            done
+
+            jq -Rs 'split("\n") | map(select(length > 0))' "$tags_file" | jq -r '
+              map(select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")))
+              | sort_by(split(".") | map(sub("^v"; "") | tonumber))
+              | reverse
+              | .[0]
+            '
+            rm -f "$tags_file"
+          }
+
+          BACKEND_TAG=$(get_latest_tag multica-backend)
+          WEB_TAG=$(get_latest_tag multica-web)
+
+          test -n "$BACKEND_TAG"
+          test -n "$WEB_TAG"
+
+          echo "backend_tag=$BACKEND_TAG" >> "$GITHUB_OUTPUT"
+          echo "web_tag=$WEB_TAG" >> "$GITHUB_OUTPUT"
+          echo "Latest backend image: $BACKEND_TAG"
+          echo "Latest web image: $WEB_TAG"
 
       - name: Login Zeabur
         run: npx zeabur@latest auth login --token "${{ secrets.ZEABUR_TOKEN }}" -i=false
